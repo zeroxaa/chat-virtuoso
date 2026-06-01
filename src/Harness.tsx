@@ -20,6 +20,7 @@ declare global {
       length: () => number;
       isAtBottom: () => boolean;
       scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
+      setRtl: (rtl: boolean) => void;
       ids: () => string[];
       lastFiredStartReachedAt: number | null;
       methods: () => ChatMessageListMethods<HarnessMessage> | null;
@@ -30,14 +31,25 @@ declare global {
 interface HarnessMessage {
   id: string;
   text: string;
+  sender: 'ada' | 'grace';
+  day: 'Earlier' | 'Today';
 }
 
 let nextN = 0;
-const mkBatch = (n: number, prefix = 'a'): HarnessMessage[] => {
+const mkBatch = (
+  n: number,
+  prefix = 'a',
+  forceDay?: HarnessMessage['day'],
+): HarnessMessage[] => {
   const out: HarnessMessage[] = [];
   for (let i = 0; i < n; i++) {
     const id = `${prefix}${nextN++}`;
-    out.push({ id, text: `${id}: lorem ipsum dolor sit amet` });
+    out.push({
+      id,
+      text: `${id}: lorem ipsum dolor sit amet`,
+      sender: Math.floor(i / 2) % 2 === 0 ? 'ada' : 'grace',
+      day: forceDay ?? (prefix === 'p' || i < Math.ceil(n / 6) ? 'Earlier' : 'Today'),
+    });
   }
   return out;
 };
@@ -45,11 +57,15 @@ const mkBatch = (n: number, prefix = 'a'): HarnessMessage[] => {
 export default function Harness() {
   const ref = useRef<ChatMessageListMethods<HarnessMessage>>(null);
   const [startReachedCount, setStartReachedCount] = useState(0);
+  const [rtl, setRtl] = useState(false);
 
   useEffect(() => {
     window.__chat = {
       append: (n, opts) =>
-        ref.current?.data.append(mkBatch(n), opts ? { behavior: opts.behavior } : undefined),
+        ref.current?.data.append(
+          mkBatch(n, 'a', 'Today'),
+          opts ? { behavior: opts.behavior } : undefined,
+        ),
       prepend: (n) => ref.current?.data.prepend(mkBatch(n, 'p')),
       replace: (n) => {
         nextN = 0;
@@ -60,6 +76,7 @@ export default function Harness() {
       isAtBottom: () => ref.current?.isAtBottom() ?? false,
       scrollToBottom: (behavior = 'smooth') =>
         ref.current?.scrollToBottom(behavior),
+      setRtl,
       ids: () => (ref.current?.data.get() ?? []).map((m) => m.id),
       lastFiredStartReachedAt: null,
       methods: () => ref.current,
@@ -92,19 +109,46 @@ export default function Harness() {
           ref={ref}
           initialData={mkBatch(30)}
           computeItemKey={(m) => m.id}
-          itemContent={(idx, m) => (
+          groupBy={(m) => m.day}
+          StickyHeaderComponent={({ groupKey, messages }) => (
+            <div
+              data-testid="sticky-label"
+              style={{
+                margin: '6px auto',
+                width: 'fit-content',
+                padding: '3px 10px',
+                borderRadius: 999,
+                background: '#394150',
+                color: '#f8fafc',
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              {groupKey} ({messages.length})
+            </div>
+          )}
+          grouped
+          rtl={rtl}
+          itemContent={(idx, m, ctx) => (
             <div
               data-testid={`msg-${m.id}`}
               data-index={idx}
+              data-sender={m.sender}
+              data-day={m.day}
+              data-first-in-group={String(ctx.isFirstInGroup)}
+              data-last-in-group={String(ctx.isLastInGroup)}
+              data-prev={ctx.prevItem?.id ?? ''}
+              data-next={ctx.nextItem?.id ?? ''}
               style={{
                 padding: '8px 12px',
-                margin: '4px 12px',
+                margin: `${ctx.isFirstInGroup ? 8 : 2}px 12px ${ctx.isLastInGroup ? 8 : 2}px`,
                 height: 32,
                 lineHeight: '16px',
-                background: '#232a37',
-                borderRadius: 8,
+                background: m.sender === 'ada' ? '#232a37' : '#263344',
+                borderRadius: ctx.isFirstInGroup || ctx.isLastInGroup ? 8 : 4,
                 fontSize: 13,
                 overflow: 'hidden',
+                textAlign: rtl ? 'right' : 'left',
               }}
             >
               {m.text}

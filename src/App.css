@@ -110,6 +110,17 @@ body {
   overflow: hidden;
 }
 
+.cml-sticky-header {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.cml-rtl .cml-scroll-to-bottom {
+  right: auto;
+  left: 16px;
+}
+
 .cml-scroll-to-bottom {
   position: absolute;
   right: 16px;

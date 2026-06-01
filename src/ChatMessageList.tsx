@@ -6,6 +6,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type ComponentType,
   type CSSProperties,
   type ForwardedRef,
@@ -13,7 +14,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { Virtuoso, type ListRange, type VirtuosoHandle } from 'react-virtuoso';
 import {
   appendItems,
   clearPendingAppendBehavior,
@@ -109,6 +110,20 @@ export interface ScrollToBottomButtonProps {
   unreadCount: number;
 }
 
+export interface ChatMessageItemContext<T, C = unknown> {
+  prevItem?: T;
+  nextItem?: T;
+  isFirstInGroup: boolean;
+  isLastInGroup: boolean;
+  groupKey?: string;
+  userContext?: C;
+}
+
+export interface StickyHeaderProps<T> {
+  groupKey: string;
+  messages: T[];
+}
+
 export interface ChatMessageListProps<T, C = unknown> {
   /** Initial dataset. After mount the list owns its data; use the ref methods to mutate it. */
   initialData?: T[];
@@ -119,9 +134,17 @@ export interface ChatMessageListProps<T, C = unknown> {
    * `(index, item, context)`, where `index` is the position in the *visible*
    * dataset (0..length-1).
    */
-  itemContent: (index: number, item: T, context: C) => ReactNode;
+  itemContent: (index: number, item: T, context: ChatMessageItemContext<T, C>) => ReactNode;
   /** Optional context object passed to itemContent. */
   context?: C;
+  /** Group messages for the sticky header, for example by date. */
+  groupBy?: (item: T) => string;
+  /** Render the sticky group header for the current viewport group. */
+  StickyHeaderComponent?: (props: StickyHeaderProps<T>) => ReactNode;
+  /** Mark adjacent messages from the same common sender field as a visual run. */
+  grouped?: boolean;
+  /** Render the list in right-to-left layout. */
+  rtl?: boolean;
   /**
    * Called when the user scrolls (or is already) at the very top — typically
    * to fetch older messages. Call `ref.current.data.prepend(...)` with the
@@ -221,6 +244,10 @@ function ChatMessageListInner<T, C>(
     computeItemKey,
     itemContent,
     context,
+    groupBy,
+    StickyHeaderComponent,
+    grouped = false,
+    rtl = false,
     onStartReached,
     ScrollToBottomButton = DefaultScrollToBottomButton,
     Header,
@@ -242,6 +269,7 @@ function ChatMessageListInner<T, C>(
   );
   const stateRef = useRef(state);
   const anchorAfterReplaceRef = useRef(false);
+  const [visibleStartIndex, setVisibleStartIndex] = useState(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -264,12 +292,6 @@ function ChatMessageListInner<T, C>(
       typeof behavior === 'function' ? behavior({ atBottom: isAtBottom }) : behavior;
     return resolved === false ? false : resolved;
   }, []);
-
-  useEffect(() => {
-    if (state.pendingAppendBehavior !== false) {
-      dispatchAction({ type: 'clearPendingAppendBehavior' });
-    }
-  }, [dispatchAction, state.pendingAppendBehavior]);
 
   const setAtBottomState = useCallback((isAtBottom: boolean) => {
     dispatchAction({ type: 'setAtBottom', atBottom: isAtBottom });
@@ -347,12 +369,44 @@ function ChatMessageListInner<T, C>(
   }, [onStartReached]);
 
   const scrollToBottom = useCallback((behavior: ChatScrollBehavior = 'smooth') => {
+    const scroller = scrollerElRef.current;
+    if (scroller) {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+      queueMicrotask(recomputeAtBottom);
+      return;
+    }
+    const lastIndex = stateRef.current.items.length - 1;
+    if (lastIndex < 0) return;
     virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
+      index: lastIndex,
       align: 'end',
       behavior,
     });
-  }, []);
+  }, [recomputeAtBottom]);
+
+  useEffect(() => {
+    const behavior = state.pendingAppendBehavior;
+    if (behavior === false) return;
+    const resolved =
+      typeof behavior === 'function'
+        ? behavior({ atBottom: state.atBottom })
+        : behavior;
+    if (resolved !== false) {
+      scrollToBottom(resolved);
+      requestAnimationFrame(() => {
+        scrollToBottom(resolved);
+        requestAnimationFrame(() => scrollToBottom(resolved));
+      });
+      window.setTimeout(() => scrollToBottom(resolved), 50);
+    }
+    dispatchAction({ type: 'clearPendingAppendBehavior' });
+  }, [
+    dispatchAction,
+    scrollToBottom,
+    state.atBottom,
+    state.dataVersion,
+    state.pendingAppendBehavior,
+  ]);
 
   const scrollToItem = useCallback(
     ({
@@ -373,6 +427,14 @@ function ChatMessageListInner<T, C>(
       });
     },
     [],
+  );
+
+  const toRelativeIndex = useCallback(
+    (index: number) => {
+      if (index >= state.firstItemIndex) return index - state.firstItemIndex;
+      return index;
+    },
+    [state.firstItemIndex],
   );
 
   const methods = useMemo<ChatMessageListMethods<T>>(
@@ -450,20 +512,85 @@ function ChatMessageListInner<T, C>(
 
   useImperativeHandle(forwardedRef, () => methods, [methods]);
 
-  const renderItem = useCallback(
-    (absoluteIndex: number, item: T) => {
-      const relIndex = absoluteIndex - state.firstItemIndex;
-      return itemContent(relIndex, item, context as C);
+  const groupInfo = useMemo(() => {
+    const itemGroupKeys = groupBy
+      ? state.items.map((item) => groupBy(item))
+      : state.items.map(() => undefined);
+    const groups = new Map<string, T[]>();
+    if (groupBy) {
+      state.items.forEach((item, index) => {
+        const key = itemGroupKeys[index];
+        if (key === undefined) return;
+        const messages = groups.get(key);
+        if (messages) messages.push(item);
+        else groups.set(key, [item]);
+      });
+    }
+    return { groups, itemGroupKeys };
+  }, [groupBy, state.items]);
+
+  const getSequenceKey = useCallback((item: T): unknown => {
+    if (typeof item !== 'object' || item === null) return undefined;
+    const record = item as Record<string, unknown>;
+    return record.senderId ?? record.sender ?? record.author ?? record.userId ?? record.user;
+  }, []);
+
+  const getItemContext = useCallback(
+    (index: number): ChatMessageItemContext<T, C> => {
+      const item = state.items[index];
+      const prevItem = index > 0 ? state.items[index - 1] : undefined;
+      const nextItem = index < state.items.length - 1 ? state.items[index + 1] : undefined;
+      const groupKey = groupInfo.itemGroupKeys[index];
+      const prevGroupKey = index > 0 ? groupInfo.itemGroupKeys[index - 1] : undefined;
+      const nextGroupKey =
+        index < state.items.length - 1 ? groupInfo.itemGroupKeys[index + 1] : undefined;
+      const sequenceKey = grouped ? getSequenceKey(item) : undefined;
+      const prevSequenceKey = grouped && prevItem ? getSequenceKey(prevItem) : undefined;
+      const nextSequenceKey = grouped && nextItem ? getSequenceKey(nextItem) : undefined;
+      const startsGroup =
+        index === 0 ||
+        (groupBy ? groupKey !== prevGroupKey : false) ||
+        (grouped && sequenceKey !== prevSequenceKey);
+      const endsGroup =
+        index === state.items.length - 1 ||
+        (groupBy ? groupKey !== nextGroupKey : false) ||
+        (grouped && sequenceKey !== nextSequenceKey);
+
+      return {
+        prevItem,
+        nextItem,
+        isFirstInGroup: startsGroup,
+        isLastInGroup: endsGroup,
+        groupKey,
+        userContext: context,
+      };
     },
-    [context, itemContent, state.firstItemIndex],
+    [context, getSequenceKey, groupBy, groupInfo.itemGroupKeys, grouped, state.items],
+  );
+
+  const renderItem = useCallback(
+    (virtuosoIndex: number, item: T) => {
+      const relIndex = toRelativeIndex(virtuosoIndex);
+      return itemContent(relIndex, item, getItemContext(relIndex));
+    },
+    [getItemContext, itemContent, toRelativeIndex],
   );
 
   const renderKey = useCallback(
-    (absoluteIndex: number, item: T) => {
-      const relIndex = absoluteIndex - state.firstItemIndex;
+    (virtuosoIndex: number, item: T) => {
+      const relIndex = toRelativeIndex(virtuosoIndex);
       return computeItemKey(item, relIndex);
     },
-    [computeItemKey, state.firstItemIndex],
+    [computeItemKey, toRelativeIndex],
+  );
+
+  const handleRangeChanged = useCallback(
+    (range: ListRange) => {
+      setVisibleStartIndex(
+        Math.max(0, Math.min(stateRef.current.items.length - 1, toRelativeIndex(range.startIndex))),
+      );
+    },
+    [toRelativeIndex],
   );
 
   const handleScrollToBottomClick = useCallback(() => {
@@ -485,12 +612,37 @@ function ChatMessageListInner<T, C>(
   );
 
   const isEmpty = state.items.length === 0;
+  const stickyGroupKey = groupInfo.itemGroupKeys[visibleStartIndex];
+  const stickyMessages =
+    stickyGroupKey !== undefined ? groupInfo.groups.get(stickyGroupKey) ?? [] : [];
 
   return (
     <div
-      className={['cml-root', className].filter(Boolean).join(' ')}
-      style={style}
+      className={['cml-root', rtl ? 'cml-rtl' : undefined, className]
+        .filter(Boolean)
+        .join(' ')}
+      dir={rtl ? 'rtl' : undefined}
+      style={{ ...style, direction: rtl ? 'rtl' : style?.direction }}
     >
+      {StickyHeaderComponent && stickyGroupKey !== undefined ? (
+        <div
+          className="cml-sticky-header"
+          data-testid="sticky-header"
+          data-group-key={stickyGroupKey}
+          style={{
+            position: 'absolute',
+            insetBlockStart: 0,
+            insetInline: 0,
+            zIndex: 2,
+            pointerEvents: 'none',
+          }}
+        >
+          {StickyHeaderComponent({
+            groupKey: stickyGroupKey,
+            messages: stickyMessages,
+          })}
+        </div>
+      ) : null}
       {isEmpty && EmptyPlaceholder ? (
         <EmptyPlaceholder />
       ) : (
@@ -503,6 +655,7 @@ function ChatMessageListInner<T, C>(
           computeItemKey={renderKey}
           itemContent={renderItem}
           followOutput={followOutput}
+          rangeChanged={handleRangeChanged}
           startReached={handleStartReached}
           atBottomStateChange={handleAtBottomStateChange}
           atBottomThreshold={atBottomThreshold}
