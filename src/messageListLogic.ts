@@ -16,8 +16,7 @@ export interface MessageListState<T> {
   atBottom: boolean;
   firstItemIndex: number;
   unreadCount: number;
-  nextAppendBehavior: 'auto' | 'smooth' | false;
-  pendingAppendBehavior: 'auto' | 'smooth' | false;
+  pendingAppendBehavior: AppendBehaviorInput;
 }
 
 export function createInitialState<T>(initialData?: T[]): MessageListState<T> {
@@ -27,7 +26,6 @@ export function createInitialState<T>(initialData?: T[]): MessageListState<T> {
     atBottom: true,
     firstItemIndex: PREPEND_START_INDEX,
     unreadCount: 0,
-    nextAppendBehavior: 'auto',
     pendingAppendBehavior: false,
   };
 }
@@ -37,7 +35,7 @@ export function appendItems<T>(
   newItems: T[],
   behavior?: AppendBehaviorInput,
 ): MessageListState<T> {
-  const resolvedBehavior = behavior ?? state.nextAppendBehavior;
+  const resolvedBehavior = behavior ?? 'auto';
 
   let effectiveBehavior: 'auto' | 'smooth' | false;
   if (typeof resolvedBehavior === 'function') {
@@ -58,8 +56,7 @@ export function appendItems<T>(
     items,
     dataVersion: state.dataVersion + 1,
     unreadCount,
-    nextAppendBehavior: 'auto',
-    pendingAppendBehavior: effectiveBehavior,
+    pendingAppendBehavior: resolvedBehavior,
   };
 }
 
@@ -73,8 +70,8 @@ export function prependItems<T>(
     items,
     dataVersion: state.dataVersion + 1,
     firstItemIndex: state.firstItemIndex - newItems.length,
-    nextAppendBehavior: false,
-    pendingAppendBehavior: false,
+    pendingAppendBehavior:
+      state.pendingAppendBehavior === false ? false : state.pendingAppendBehavior,
   };
 }
 
@@ -90,7 +87,6 @@ export function replaceItems<T>(
     firstItemIndex: PREPEND_START_INDEX,
     atBottom: true,
     unreadCount: 0,
-    nextAppendBehavior: 'auto',
     pendingAppendBehavior: false,
   };
 }
@@ -111,7 +107,6 @@ export function replaceMappedItems<T>(
     ...state,
     items: items.slice(),
     dataVersion: state.dataVersion + 1,
-    nextAppendBehavior: false,
     pendingAppendBehavior: false,
   };
 }
@@ -137,7 +132,6 @@ export function findAndUpdateItem<T>(
       ...state,
       items,
       dataVersion: state.dataVersion + 1,
-      nextAppendBehavior: false,
       pendingAppendBehavior: false,
     },
     found: true,
@@ -156,9 +150,9 @@ export function findAndDeleteItem<T>(
       ...state,
       items,
       dataVersion: state.dataVersion + 1,
-      nextAppendBehavior: false,
       pendingAppendBehavior: false,
-      firstItemIndex: state.firstItemIndex + 1,
+      firstItemIndex:
+        idx === 0 ? state.firstItemIndex + 1 : state.firstItemIndex,
     },
     found: true,
   };
@@ -176,7 +170,6 @@ export function updateItemAt<T>(
     ...state,
     items,
     dataVersion: state.dataVersion + 1,
-    nextAppendBehavior: false,
     pendingAppendBehavior: false,
   };
 }
@@ -191,9 +184,9 @@ export function deleteItemAt<T>(
     ...state,
     items,
     dataVersion: state.dataVersion + 1,
-    nextAppendBehavior: false,
     pendingAppendBehavior: false,
-    firstItemIndex: state.firstItemIndex + 1,
+    firstItemIndex:
+      index === 0 ? state.firstItemIndex + 1 : state.firstItemIndex,
     atBottom: items.length === 0 ? true : state.atBottom,
     unreadCount: items.length === 0 ? 0 : state.unreadCount,
   };
@@ -218,6 +211,16 @@ export function clearUnread<T>(state: MessageListState<T>): MessageListState<T> 
   return {
     ...state,
     unreadCount: 0,
+  };
+}
+
+export function clearPendingAppendBehavior<T>(
+  state: MessageListState<T>,
+): MessageListState<T> {
+  if (state.pendingAppendBehavior === false) return state;
+  return {
+    ...state,
+    pendingAppendBehavior: false,
   };
 }
 

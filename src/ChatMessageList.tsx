@@ -16,9 +16,12 @@ import {
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import {
   appendItems,
+  clearPendingAppendBehavior,
   clearUnread,
   createInitialState,
   deleteItemAt,
+  findAndDeleteItem,
+  findAndUpdateItem,
   findItem,
   getItems,
   getLength,
@@ -175,7 +178,9 @@ type MessageListAction<T> =
   | { type: 'updateAt'; index: number; item: T }
   | { type: 'deleteAt'; index: number }
   | { type: 'setAtBottom'; atBottom: boolean }
-  | { type: 'clearUnread' };
+  | { type: 'clearUnread' }
+  | { type: 'clearPendingAppendBehavior' }
+  | { type: 'commit'; state: MessageListState<T> };
 
 function messageListReducer<T>(
   state: MessageListState<T>,
@@ -198,6 +203,10 @@ function messageListReducer<T>(
       return setAtBottom(state, action.atBottom);
     case 'clearUnread':
       return clearUnread(state);
+    case 'clearPendingAppendBehavior':
+      return clearPendingAppendBehavior(state);
+    case 'commit':
+      return action.state;
     default:
       return state;
   }
@@ -232,6 +241,7 @@ function ChatMessageListInner<T, C>(
     createInitialState<T>,
   );
   const stateRef = useRef(state);
+  const anchorAfterReplaceRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
@@ -248,10 +258,18 @@ function ChatMessageListInner<T, C>(
     [rawDispatch],
   );
 
-  const followOutput = useCallback(() => {
+  const followOutput = useCallback((isAtBottom: boolean) => {
     const behavior = stateRef.current.pendingAppendBehavior;
-    return behavior === false ? false : behavior;
+    const resolved =
+      typeof behavior === 'function' ? behavior({ atBottom: isAtBottom }) : behavior;
+    return resolved === false ? false : resolved;
   }, []);
+
+  useEffect(() => {
+    if (state.pendingAppendBehavior !== false) {
+      dispatchAction({ type: 'clearPendingAppendBehavior' });
+    }
+  }, [dispatchAction, state.pendingAppendBehavior]);
 
   const setAtBottomState = useCallback((isAtBottom: boolean) => {
     dispatchAction({ type: 'setAtBottom', atBottom: isAtBottom });
@@ -347,9 +365,9 @@ function ChatMessageListInner<T, C>(
       align?: 'start' | 'center' | 'end';
     }) => {
       // The public API uses dataset-relative indices; Virtuoso uses the
-      // absolute item index when firstItemIndex is set.
+      // current data range index.
       virtuosoRef.current?.scrollToIndex({
-        index: stateRef.current.firstItemIndex + index,
+        index,
         align,
         behavior,
       });
@@ -374,6 +392,7 @@ function ChatMessageListInner<T, C>(
           dispatchAction({ type: 'prepend', items });
         },
         replace: (items) => {
+          anchorAfterReplaceRef.current = items.length > 0;
           dispatchAction({ type: 'replace', items });
         },
         map: (mapper) => {
@@ -382,34 +401,38 @@ function ChatMessageListInner<T, C>(
         },
         find: (predicate) => findItem(stateRef.current, predicate),
         findAndUpdate: (predicate, update) => {
-          const idx = stateRef.current.items.findIndex(predicate);
-          if (idx < 0) return false;
-          const item = update(stateRef.current.items[idx]);
-          dispatchAction({ type: 'updateAt', index: idx, item });
-          return true;
+          const { state: next, found } = findAndUpdateItem(
+            stateRef.current,
+            predicate,
+            update,
+          );
+          if (found) dispatchAction({ type: 'commit', state: next });
+          return found;
         },
         findAndDelete: (predicate) => {
-          const idx = stateRef.current.items.findIndex(predicate);
-          if (idx < 0) return false;
-          dispatchAction({ type: 'deleteAt', index: idx });
-          return true;
+          const { state: next, found } = findAndDeleteItem(
+            stateRef.current,
+            predicate,
+          );
+          if (found) dispatchAction({ type: 'commit', state: next });
+          return found;
         },
         updateByKey: (key, update) => {
-          const idx = stateRef.current.items.findIndex(
+          const { state: next, found } = findAndUpdateItem(
+            stateRef.current,
             (item, index) => computeItemKey(item, index) === key,
+            update,
           );
-          if (idx < 0) return false;
-          const item = update(stateRef.current.items[idx]);
-          dispatchAction({ type: 'updateAt', index: idx, item });
-          return true;
+          if (found) dispatchAction({ type: 'commit', state: next });
+          return found;
         },
         deleteByKey: (key) => {
-          const idx = stateRef.current.items.findIndex(
+          const { state: next, found } = findAndDeleteItem(
+            stateRef.current,
             (item, index) => computeItemKey(item, index) === key,
           );
-          if (idx < 0) return false;
-          dispatchAction({ type: 'deleteAt', index: idx });
-          return true;
+          if (found) dispatchAction({ type: 'commit', state: next });
+          return found;
         },
         clearUnread: () => {
           dispatchAction({ type: 'clearUnread' });
@@ -446,6 +469,12 @@ function ChatMessageListInner<T, C>(
   const handleScrollToBottomClick = useCallback(() => {
     scrollToBottom('smooth');
   }, [scrollToBottom]);
+
+  useEffect(() => {
+    if (!anchorAfterReplaceRef.current) return;
+    anchorAfterReplaceRef.current = false;
+    if (state.items.length > 0) scrollToBottom('auto');
+  }, [scrollToBottom, state.dataVersion, state.items.length]);
 
   const components = useMemo(
     () => ({

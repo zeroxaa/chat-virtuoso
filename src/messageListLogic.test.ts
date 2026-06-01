@@ -43,7 +43,7 @@ describe('createInitialState', () => {
     expect(s.atBottom).toBe(true);
     expect(s.firstItemIndex).toBe(PREPEND_START_INDEX);
     expect(s.unreadCount).toBe(0);
-    expect(s.nextAppendBehavior).toBe('auto');
+    expect(s.pendingAppendBehavior).toBe(false);
   });
 
   it('creates state with empty array', () => {
@@ -151,20 +151,19 @@ describe('appendItems', () => {
     expect(next.unreadCount).toBe(0);
   });
 
-  /* ---- nextAppendBehavior reset ---- */
+  /* ---- pendingAppendBehavior ---- */
 
-  it('resets nextAppendBehavior to "auto" after append', () => {
+  it('stores the append behavior for followOutput after append', () => {
     const s = createInitialState([m('a')]);
     const next = appendItems(s, [m('b')], false);
-    expect(next.nextAppendBehavior).toBe('auto');
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
-  it('uses nextAppendBehavior when no explicit behavior given', () => {
-    const s = { ...createInitialState([m('a')]), nextAppendBehavior: false as const };
+  it('uses auto behavior when no explicit behavior is given', () => {
+    const s = createInitialState([m('a')]);
     const next = appendItems(s, [m('b')]);
-    // false behavior => accumulates
-    expect(next.unreadCount).toBe(1);
-    expect(next.nextAppendBehavior).toBe('auto');
+    expect(next.unreadCount).toBe(0);
+    expect(next.pendingAppendBehavior).toBe('auto');
   });
 
   /* ---- immutability ---- */
@@ -241,10 +240,10 @@ describe('prependItems', () => {
     expect(next.firstItemIndex).toBe(PREPEND_START_INDEX);
   });
 
-  it('suppresses next followOutput (nextAppendBehavior = false)', () => {
+  it('suppresses next followOutput when no append is pending', () => {
     const s = createInitialState([m('a')]);
     const next = prependItems(s, [m('old')]);
-    expect(next.nextAppendBehavior).toBe(false);
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
   it('does not mutate original state', () => {
@@ -264,12 +263,20 @@ describe('prependItems', () => {
     expect(next.firstItemIndex).toBe(PREPEND_START_INDEX - 5000);
   });
 
-  it('prepend then append: prepend suppresses, then append resets', () => {
+  it('prepend then append: prepend suppresses, then append stores follow behavior', () => {
     let s = createInitialState([m('mid')]);
     s = prependItems(s, [m('before')]);
-    expect(s.nextAppendBehavior).toBe(false);
+    expect(s.pendingAppendBehavior).toBe(false);
     s = appendItems(s, [m('after')]);
-    expect(s.nextAppendBehavior).toBe('auto');
+    expect(s.pendingAppendBehavior).toBe('auto');
+    expect(s.items).toEqual([m('before'), m('mid'), m('after')]);
+  });
+
+  it('prepend preserves a pending append follow behavior in the same tick', () => {
+    let s = createInitialState([m('mid')]);
+    s = appendItems(s, [m('after')], 'smooth');
+    s = prependItems(s, [m('before')]);
+    expect(s.pendingAppendBehavior).toBe('smooth');
     expect(s.items).toEqual([m('before'), m('mid'), m('after')]);
   });
 });
@@ -301,10 +308,10 @@ describe('replaceItems', () => {
     expect(s.unreadCount).toBe(0);
   });
 
-  it('resets nextAppendBehavior to "auto"', () => {
-    const s = { ...createInitialState([m('a')]), nextAppendBehavior: false as const };
+  it('clears pending append behavior', () => {
+    const s = { ...createInitialState([m('a')]), pendingAppendBehavior: 'smooth' as const };
     const next = replaceItems(s, [m('x')]);
-    expect(next.nextAppendBehavior).toBe('auto');
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
   it('replace with empty array', () => {
@@ -338,10 +345,10 @@ describe('mapItems', () => {
     expect(next.items.length).toBe(5);
   });
 
-  it('suppresses followOutput (nextAppendBehavior = false)', () => {
+  it('suppresses followOutput', () => {
     const s = createInitialState([m('a')]);
     const next = mapItems(s, (x) => x);
-    expect(next.nextAppendBehavior).toBe(false);
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
   it('does not mutate original items', () => {
@@ -425,14 +432,14 @@ describe('findAndUpdateItem', () => {
     expect(next).toBe(s); // same reference when not found
   });
 
-  it('suppresses followOutput (nextAppendBehavior = false)', () => {
+  it('suppresses followOutput', () => {
     const s = createInitialState([m('a')]);
     const { state: next } = findAndUpdateItem(
       s,
       (x) => x.id === 'a',
       (x) => x,
     );
-    expect(next.nextAppendBehavior).toBe(false);
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
   it('does not mutate original state', () => {
@@ -483,16 +490,22 @@ describe('findAndDeleteItem', () => {
     expect(next).toBe(s);
   });
 
-  it('increments firstItemIndex by 1 (to keep Virtuoso stable)', () => {
+  it('increments firstItemIndex by 1 when deleting the first item', () => {
     const s = createInitialState([m('a'), m('b')]);
     const { state: next } = findAndDeleteItem(s, (x) => x.id === 'a');
     expect(next.firstItemIndex).toBe(s.firstItemIndex + 1);
   });
 
-  it('suppresses followOutput (nextAppendBehavior = false)', () => {
+  it('does not change firstItemIndex when deleting a non-first item', () => {
+    const s = createInitialState([m('a'), m('b')]);
+    const { state: next } = findAndDeleteItem(s, (x) => x.id === 'b');
+    expect(next.firstItemIndex).toBe(s.firstItemIndex);
+  });
+
+  it('suppresses followOutput', () => {
     const s = createInitialState([m('a')]);
     const { state: next } = findAndDeleteItem(s, (x) => x.id === 'a');
-    expect(next.nextAppendBehavior).toBe(false);
+    expect(next.pendingAppendBehavior).toBe(false);
   });
 
   it('does not mutate original state', () => {
@@ -543,7 +556,7 @@ describe('scenarios', () => {
     expect(s.items.length).toBe(40);
     expect(s.items[0].id).toBe('old0');
     expect(s.items[39].id).toBe('m19');
-    expect(s.nextAppendBehavior).toBe(false); // no auto-scroll after prepend
+    expect(s.pendingAppendBehavior).toBe(false); // no auto-scroll after prepend
 
     // New message arrives while user is reading history
     s = appendItems(
@@ -587,7 +600,7 @@ describe('scenarios', () => {
     expect(s.items.length).toBe(2);
     expect(s.firstItemIndex).toBe(PREPEND_START_INDEX);
     expect(s.unreadCount).toBe(0);
-    expect(s.nextAppendBehavior).toBe('auto');
+    expect(s.pendingAppendBehavior).toBe(false);
   });
 
   it('real-time edit: findAndUpdate does not change order', () => {
@@ -615,8 +628,8 @@ describe('scenarios', () => {
     }
     expect(s.items.length).toBe(5);
     expect(s.items.map((x) => x.id)).toEqual(['m0', 'm2', 'm4', 'm6', 'm8']);
-    // firstItemIndex incremented by 1 per deletion
-    expect(s.firstItemIndex).toBe(PREPEND_START_INDEX + toDelete.length);
+    // Deleting non-first items should not move the first item index.
+    expect(s.firstItemIndex).toBe(PREPEND_START_INDEX);
   });
 
   it('map items preserves identity for unchanged items', () => {
