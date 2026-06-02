@@ -75,6 +75,39 @@ export function prependItems<T>(
   };
 }
 
+/**
+ * Insert items at a dataset-relative index (0..length). Added for cctools to
+ * match the paid @virtuoso.dev/message-list `data.insert(items, index)` that
+ * dust's ConversationViewer relies on for ordered structural inserts (a new
+ * message landing at its rank position rather than always at the bottom).
+ *
+ * firstItemIndex handling mirrors prependItems: an insert at index 0 is a
+ * prepend (shift the virtuoso anchor so the visible scroll position holds);
+ * inserts elsewhere leave the anchor untouched.
+ */
+export function insertItemsAt<T>(
+  state: MessageListState<T>,
+  newItems: T[],
+  index: number,
+): MessageListState<T> {
+  if (newItems.length === 0) return state;
+  const clamped = Math.max(0, Math.min(index, state.items.length));
+  const items = [
+    ...state.items.slice(0, clamped),
+    ...newItems,
+    ...state.items.slice(clamped),
+  ];
+  return {
+    ...state,
+    items,
+    dataVersion: state.dataVersion + 1,
+    firstItemIndex:
+      clamped === 0 ? state.firstItemIndex - newItems.length : state.firstItemIndex,
+    pendingAppendBehavior:
+      state.pendingAppendBehavior === false ? false : state.pendingAppendBehavior,
+  };
+}
+
 export function replaceItems<T>(
   state: MessageListState<T>,
   items: T[],

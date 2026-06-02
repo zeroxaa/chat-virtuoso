@@ -15,7 +15,7 @@ import {
   getItems,
   getLength,
   PREPEND_START_INDEX,
-} from './messageListLogic';
+} from '../messageListLogic';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */

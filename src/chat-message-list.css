@@ -1,0 +1,31 @@
+/* Styling for the open-source VirtuosoMessageList drop-in. Only the structural
+ * rules the component itself emits are here; bubble/content styling lives in the
+ * consumer (cctools agent-loop bubbles). */
+
+.cml-root {
+  position: relative;
+  height: 100%;
+  /* The cml-root is Virtuoso's customScrollParent — it owns the scrolling. */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Sticky overlays (commercial StickyHeader / StickyFooter) float over the
+ * scroller rather than scrolling with content. */
+.cml-sticky-overlay {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.cml-sticky-overlay > * {
+  pointer-events: auto;
+}
+
+.cml-sticky-top {
+  top: 0;
+}
+
+.cml-sticky-bottom {
+  bottom: 0;
+}
